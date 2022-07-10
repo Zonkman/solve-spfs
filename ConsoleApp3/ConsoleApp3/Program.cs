@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Numerics;
+using System.IO;
 
 namespace SuperPowerSolver
 {
@@ -18,35 +19,55 @@ namespace SuperPowerSolver
 
     class PlayerMultiplier
     {
-        public int log2Multiplier;
-        // assume upgrading one at a time in a balanced way
-        public enum Progress { One = -2, Two, All }
-        public Progress progress = Progress.All;
+        // The highest amount a level can be differ from another.
+        // BALANCE_TOLERANCE = 6 would mean, for example, we can't upgrade 2^22 strength until we first upgrade 2^16 endurance
+        // (strength is 6 levels above endurance and would become 7 levels above if we upgraded again.)
+        // This must be at least 1 or no upgrade will ever be allowed!
+        public const int BALANCE_TOLERANCE = 6;
 
-        public PlayerMultiplier()
+        public Dictionary<StatLabel, int> levels = new Dictionary<StatLabel, int>()
         {
-            log2Multiplier = 0;
+            { StatLabel.Endurance, 0 }, { StatLabel.Strength, 0 }, { StatLabel.Psychic, 0 },
+        };
+        // assume upgrading one at a time in a balanced way
+
+        public PlayerMultiplier() { }
+
+        // would it remain balanced if we upgrade this?
+        // this function is used to disallow the upgrade if it upsets the balance.
+        public bool WouldItRemainBalanced(StatLabel next)
+        {
+            Dictionary<StatLabel, int> fakeLevels = new Dictionary<StatLabel, int>(levels);
+            ++fakeLevels[next];
+            if (Math.Abs(fakeLevels[StatLabel.Endurance] - fakeLevels[StatLabel.Strength]) > BALANCE_TOLERANCE) { return false; }
+            if (Math.Abs(fakeLevels[StatLabel.Psychic] - fakeLevels[StatLabel.Strength]) > BALANCE_TOLERANCE) { return false; }
+            if (Math.Abs(fakeLevels[StatLabel.Psychic] - fakeLevels[StatLabel.Endurance]) > BALANCE_TOLERANCE) { return false; }
+            return true;
         }
 
-        public double Multiplier() { return Math.Pow(2, log2Multiplier); }
+        public double Multiplier(StatLabel which) {
+            return Math.Pow(2, levels[which]);
+        }
 
         public PlayerMultiplier(PlayerMultiplier old)
         {
-            log2Multiplier = old.log2Multiplier;
-            progress = old.progress;
+            levels = new Dictionary<StatLabel, int>(old.levels);
         }
 
-        public static bool operator ==(PlayerMultiplier a, PlayerMultiplier b) { return a.log2Multiplier == b.log2Multiplier && a.progress == b.progress; }
-        public static bool operator !=(PlayerMultiplier a, PlayerMultiplier b) { return a.log2Multiplier != b.log2Multiplier || a.progress != b.progress; }
+        public static bool operator ==(PlayerMultiplier a, PlayerMultiplier b) { return a.Equals(b); }
+        public static bool operator !=(PlayerMultiplier a, PlayerMultiplier b) { return !a.Equals(b); }
         public override bool Equals(object obj)
         {
             if (obj is PlayerMultiplier)
             {
-                return log2Multiplier == (obj as PlayerMultiplier).log2Multiplier && progress == (obj as PlayerMultiplier).progress;
+                PlayerMultiplier other = obj as PlayerMultiplier;
+                return levels[StatLabel.Endurance] == other.levels[StatLabel.Endurance]
+                    && levels[StatLabel.Strength] == other.levels[StatLabel.Strength]
+                    && levels[StatLabel.Psychic] == other.levels[StatLabel.Psychic];
             }
             return false;
         }
-        public override int GetHashCode() { return log2Multiplier * 3 + (int)progress; }
+        public override int GetHashCode() { return levels[StatLabel.Endurance] + 1000 * levels[StatLabel.Strength] + 1000000 * levels[StatLabel.Psychic]; }
     }
 
     public enum RankLabel { F, E, D, C, B, A, S, SS, SSS, X, Y, Z, XYZ, Legend, Immortal, TimeRuler, UniRuler, MulRuler, Omni }
@@ -65,7 +86,8 @@ namespace SuperPowerSolver
         }
     }
 
-    public enum TransformationLabel { None, BuffNoob, Guardian, Shadow, Void, FDragon, SciBorg, Ocean, Warrior, ELord, Thunder, MDragon,
+    public enum TransformationLabel { None, BuffNoob, GoldGrd, Shadow, Void, FDragon, SciBorg, Ocean, GWarrior, ELord, Thunder, MDragon,
+        Ninja, GemGrd, FKnight, AWarrior,
         Werewolf, Minotaur, Gryphon, Phoenix, Yeti, Hydra, Reaper, DragonRuler
     }
 
@@ -74,13 +96,15 @@ namespace SuperPowerSolver
         public double cost;
         public double powerMultiplier;
         public double coinMultiplier;
+        public double gemMultiplier;
         public bool obtainedByFusion;
 
-        public Transformation(double c, double pm, double cm) // transf.s you can buy
+        public Transformation(double c, double pm, double cm, double gm) // transf.s you can buy
         {
             cost = c;
             powerMultiplier = pm;
             coinMultiplier = cm;
+            gemMultiplier = gm;
             obtainedByFusion = false;
         }
 
@@ -89,6 +113,7 @@ namespace SuperPowerSolver
             cost = double.PositiveInfinity;
             powerMultiplier = pm;
             coinMultiplier = 1;
+            gemMultiplier = 1;
             obtainedByFusion = true;
         }
     }
@@ -166,8 +191,83 @@ namespace SuperPowerSolver
         public double RewardPerSecond(Player plr, TransformationLabel transf)
         {
             double rps = (reward + ((int)plr.rank * rankBonus)) / (double)CHEST_TIME;
-            if (transf == TransformationLabel.Guardian) { rps *= 1.25; }
+            if (transf == TransformationLabel.GoldGrd) { rps *= 1.25; }
             return rps;
+        }
+    }
+
+    public enum Rarity { Common, Rare, Epic, Legendary, Celestial, God }
+
+    class AncientItem
+    {
+        public string name;
+        public double chance; // chance in the pack (need not be normalized, but should be)
+        public double sellWorth; // in gems
+        public double[] multipliers = new double[5];
+        public StatLabel stat;
+        public Rarity rarity;
+        public ItemPack pack;
+
+        public static bool operator ==(AncientItem a, AncientItem b) { return a.Equals(b); }
+        public static bool operator !=(AncientItem a, AncientItem b) { return !a.Equals(b); }
+        public override bool Equals(object obj)
+        {
+            if (obj is AncientItem) { return (obj as AncientItem).name == name; }
+            return false;
+        }
+        public override int GetHashCode() { return name.GetHashCode(); }
+
+        public double GetMultiplier(StatLabel outStat, double count)
+        {
+            if ((stat & outStat) == 0) { return 0; }
+            if (count < 0) { throw new Exception("STOP DOING MATH"); }
+            int[] countsForGrade = GameInfo.itemGradeRequirements[rarity];
+            int grade = -1;
+            for (int i = 0; i < 5; ++i) { if (count + 0.01 >= countsForGrade[i]) { grade = i; } }
+            if (grade == -1) { return 0; }
+            return multipliers[grade];
+        }
+
+        public double ExpectedTries() { return pack.ExpectedTries(this); }
+        public double NormalizedChance() { pack.CalculateTotalChance(); return chance / pack.totalChance; }
+    }
+
+    class ItemPack
+    {
+        public string name;
+        public double cost; // in gems
+        public HashSet<AncientItem> items = new HashSet<AncientItem>();
+
+        public double totalChance = -1;
+        public void CalculateTotalChance()
+        {
+            if (totalChance < 0)
+            {
+                totalChance = 0;
+                foreach (AncientItem item in items) { totalChance += item.chance; }
+            }
+        }
+
+        // Geometric random variable: how many mean packs to open, to obtain the item once
+        public double ExpectedTries(AncientItem item)
+        {
+            CalculateTotalChance();
+            double rc = item.chance / totalChance;
+            return Math.Ceiling(1.0 / rc);
+        }
+
+        public AncientItem PickItem()
+        {
+            if (items.Count == 0) { throw new Exception("Item pack named " + name +" shouldn't be empty"); }
+            CalculateTotalChance();
+            double r = GameInfo.rand.NextDouble() * totalChance;
+            AncientItem chosen = null;
+            double sumulus = 0;
+            foreach (AncientItem item in items) {
+                sumulus += item.chance;
+                if (r < sumulus) { chosen = item; break; }
+            }
+            return chosen;
         }
     }
 
@@ -182,42 +282,81 @@ namespace SuperPowerSolver
         public abstract string ViewResult(Player plr);
     }
 
+    // All is used for items that upgrade all stats
+    public enum StatLabel { Endurance = 1, Strength = 2, Psychic = 4, All = 7 }
+
     class StatsUpGoal : PlayerGoal
     {
-        public override string ToString() { return "Increase stats"; }
-        public override BigInteger TimeUntilExecute(Player plr) { return plr.SecondsUntilStatsUp(out _); }
-        public override bool Execute(Player plr) { return plr.StatsUp(); }
+        public StatLabel which;
+        public override string ToString() { return "Increase " + which.ToString() + " stat"; }
+        public override BigInteger TimeUntilExecute(Player plr) { return plr.SecondsUntilStatsUp(which, out _); }
+        public override bool Execute(Player plr) { return plr.StatsUp(which); }
         public override string ViewResult(Player plr) { return plr.StatsInfo(); }
+        public StatsUpGoal(StatLabel w) { which = w; }
     }
 
     // This makes paths a lot shorter: process to combine StatsUpGoals
     class MultiStatsUpGoal : PlayerGoal
     {
+        public StatLabel which;
         public int multiple;
-        public override string ToString() { return "Increase stats x" + multiple.ToString(); }
-        public override BigInteger TimeUntilExecute(Player plr) {
+        public override string ToString() { return "Increase " + which.ToString()  + " stat x" + multiple.ToString(); }
+        public override BigInteger TimeUntilExecute(Player plr)
+        {
             Player fakePlr = new Player(plr);
             BigInteger totalTime = 0;
             for (int i = 0; i < multiple; ++i)
             {
-                BigInteger subTime = fakePlr.SecondsUntilStatsUp(out _);
+                BigInteger subTime = fakePlr.SecondsUntilStatsUp(which, out _);
                 if (subTime > MAX_GOAL_TIME) { return subTime; }
                 totalTime += subTime;
-                bool check = fakePlr.StatsUp();
+                bool check = fakePlr.StatsUp(which);
                 if (!check) { return BigInteger.Pow(10, 100); }
             }
             return totalTime;
         }
-        public override bool Execute(Player plr) {
+        public override bool Execute(Player plr)
+        {
             for (int i = 0; i < multiple; ++i)
             {
-                bool sub = plr.StatsUp();
+                bool sub = plr.StatsUp(which);
                 if (!sub) { return false; }
             }
             return true;
         }
         public override string ViewResult(Player plr) { return plr.StatsInfo(); }
-        public MultiStatsUpGoal(int m) { multiple = m; }
+        public MultiStatsUpGoal(StatLabel w, int m) { which = w; multiple = m; }
+    }
+
+    class MultiRankUpGoal : PlayerGoal
+    {
+        public int multiple;
+        public override string ToString() { return "Rank up x" + multiple.ToString(); }
+        public override BigInteger TimeUntilExecute(Player plr)
+        {
+            Player fakePlr = new Player(plr);
+            BigInteger totalTime = 0;
+            for (int i = 0; i < multiple; ++i)
+            {
+                BigInteger subTime = fakePlr.SecondsUntilRankUp(out _);
+                if (subTime > MAX_GOAL_TIME) { return subTime; }
+                totalTime += subTime;
+                bool check = fakePlr.RankUp();
+                if (!check) { return BigInteger.Pow(10, 100); }
+            }
+            return totalTime;
+        }
+        public override bool Execute(Player plr)
+        {
+            for (int i = 0; i < multiple; ++i)
+            {
+                bool sub = plr.RankUp();
+                if (!sub) { return false; }
+            }
+            return true;
+        }
+        public override string ViewResult(Player plr) { return plr.RankInfo(); }
+        public MultiRankUpGoal(int m) { multiple = m; }
     }
 
     class RankUpGoal : PlayerGoal
@@ -246,22 +385,54 @@ namespace SuperPowerSolver
         public override string ViewResult(Player plr) { return plr.FusionInfo(); }
     }
 
+    class OneItemPackGoal : PlayerGoal
+    {
+        public ItemPack pack;
+        public override string ToString() { return "Buy " + pack.name + " pack"; }
+        public override BigInteger TimeUntilExecute(Player plr) { return plr.SecondsUntilBuyPack(pack, 1, out _); }
+        public override bool Execute(Player plr) { return plr.BuyPack(pack); }
+        public override string ViewResult(Player plr) { return plr.ItemInfo(); }
+        public OneItemPackGoal(ItemPack p) { pack = p; }
+    }
+
+    class AncientItemGoal : PlayerGoal
+    {
+        public AncientItem item;
+        public override string ToString() { return "Obtain " + item.name + " by buying " + item.ExpectedTries().ToString("G7") + " " + item.pack.name + " packs"; }
+        public override BigInteger TimeUntilExecute(Player plr) { return plr.SecondsUntilMeanItem(item, out _); }
+        public override bool Execute(Player plr) { return plr.BuyPackForItem(item); }
+        public override string ViewResult(Player plr) { return plr.ItemInfo(); }
+        public AncientItemGoal(AncientItem i) { item = i; }
+    }
+
     class Player
     {
         public BigInteger seconds = 0; // How long the player was in the game
 
         public double coins = 100;
         public double power = 0;
+        public double gems = 0;
         // power normal multiplier
         public PlayerMultiplier mainMultiplier = new PlayerMultiplier();
         public RankLabel rank = RankLabel.F;
         public HashSet<TransformationLabel> transformations = new HashSet<TransformationLabel>() { TransformationLabel.None };
         public FusionLabel fusion = FusionLabel.None;
+        public Dictionary<AncientItem, double> items = new Dictionary<AncientItem, double>();
+        // this will save a lot of calculation time.
+        // changed whenever an item is purchased.
+        private Dictionary<StatLabel, double> multipliersFromItems = new Dictionary<StatLabel, double>()
+        {
+            { StatLabel.Endurance, 0 }, { StatLabel.Strength, 0 }, { StatLabel.Psychic, 0 }
+        };
+        private AncientItem mostRecentItem = null;
+        public double totalItems = 0;
 
         public Player()
         {
             // collect initial chest reward instantly, all future rewards will be averaged
             coins += ChestRewardPerSecond(TransformationLabel.None) * (double)Chest.CHEST_TIME;
+            // collect first daily mini-chest reward instantly
+            gems += 47500;
         }
 
         // Make sure to copy any new fields that you add later, like gems and items
@@ -270,10 +441,12 @@ namespace SuperPowerSolver
             seconds = old.seconds;
             coins = old.coins;
             power = old.power;
+            gems = old.gems;
             mainMultiplier = new PlayerMultiplier(old.mainMultiplier);
             rank = old.rank;
             transformations = new HashSet<TransformationLabel>(old.transformations);
             fusion = old.fusion;
+            items = new Dictionary<AncientItem, double>(old.items);
         } 
 
         // Splice point player is similar enough to another player
@@ -284,19 +457,37 @@ namespace SuperPowerSolver
             return rtf && m;
         }
 
+        private double MultiplierByStat(StatLabel which)
+        {
+            return mainMultiplier.Multiplier(which) * (1 + multipliersFromItems[which]);
+        }
+
+        // Use mainMultiplier and items
+        private double HighestMultiplierByStat()
+        {
+            return Math.Max(Math.Max(MultiplierByStat(StatLabel.Endurance), MultiplierByStat(StatLabel.Strength)), MultiplierByStat(StatLabel.Psychic));
+        }
+
         public double PowerMultiplier(TransformationLabel transf)
         {
             double rm = GameInfo.rankInfo[rank].powerMultiplier;
             double tm = GameInfo.transfInfo[transf].powerMultiplier;
             double fm = GameInfo.fusionInfo[fusion].powerMultiplier;
-            return mainMultiplier.Multiplier() * rm * tm * fm;
+            return HighestMultiplierByStat() * rm * tm * fm;
         }
 
         public double CoinMultiplier(TransformationLabel transf)
         {
             double rm = GameInfo.rankInfo[rank].coinMultiplier;
             double tm = GameInfo.transfInfo[transf].coinMultiplier;
-            return rm * tm;
+            return rm * tm; // is it really stacking? need to find out
+        }
+
+        public double GemMultiplier(TransformationLabel transf)
+        {
+            double fm = 1 + (int)fusion;
+            double tm = GameInfo.transfInfo[transf].gemMultiplier;
+            return fm * tm; // is it really stacking? need to find out
         }
 
         public double ChestRewardPerSecond(TransformationLabel transf)
@@ -310,11 +501,17 @@ namespace SuperPowerSolver
             return tr;
         }
 
+        public double MiniChestRewardPerSecond(TransformationLabel transf)
+        {
+            return (transf == TransformationLabel.GemGrd ? 1.25 : 1) * 47500.0 / (60 * 60 * 24);
+        }
+
         public void Play(BigInteger secs, TransformationLabel transf)
         {
             seconds += secs;
             coins += (double)secs * ((GameInfo.baseCoinsPerSecond * CoinMultiplier(transf)) + ChestRewardPerSecond(transf));
             power += (double)secs * PowerMultiplier(transf);
+            gems += (double)secs * ((GameInfo.baseGemsPerSecond * GemMultiplier(transf)) + MiniChestRewardPerSecond(transf) /*+ GameInfo.dailyOfferGemsPerSecond*/);
         }
 
         // get seconds until reaching a certain power, if the player doesn't upgrade, clicks every second, and takes advantage of all areas
@@ -358,40 +555,49 @@ namespace SuperPowerSolver
             return (BigInteger)Math.Ceiling((target - coins) / (rate * 60.0)) * 60;
         }
 
-        // return true = success
-        public bool StatsUp()
+        public BigInteger SecondsUntilGems(double target, out TransformationLabel bestTransf)
         {
-            int l2 = mainMultiplier.log2Multiplier;
+            bestTransf = TransformationLabel.None;
+            if (target <= gems) { return 0; }
+            foreach (TransformationLabel t in transformations)
+            {
+                if (GameInfo.transfInfo[t].gemMultiplier > GameInfo.transfInfo[bestTransf].gemMultiplier) { bestTransf = t; }
+            }
+            double rate = /*GameInfo.dailyOfferGemsPerSecond +*/ MiniChestRewardPerSecond(bestTransf) + (GameInfo.baseGemsPerSecond * GemMultiplier(bestTransf));
+            // Player only gets coins every minute, so round up to the next minute
+            return (BigInteger)Math.Ceiling((target - gems) / (rate * 60.0)) * 60;
+        }
+
+        // return true = success
+        public bool StatsUp(StatLabel which)
+        {
+            int l2 = mainMultiplier.levels[which];
             if (l2 >= GameInfo.plrMulCosts.Length) { return false; }
+            if (!mainMultiplier.WouldItRemainBalanced(which)) { return false; }
             TransformationLabel bestTransf;
-            Play(SecondsUntilStatsUp(out bestTransf), bestTransf);
+            Play(SecondsUntilStatsUp(which, out bestTransf), bestTransf);
             coins -= GameInfo.plrMulCosts[l2];
             PlayerMultiplier next = new PlayerMultiplier(mainMultiplier);
-            if (next.progress == PlayerMultiplier.Progress.All)
-            {
-                next.progress = PlayerMultiplier.Progress.One;
-                ++next.log2Multiplier;
-            }
-            else if (next.progress == PlayerMultiplier.Progress.One) { next.progress = PlayerMultiplier.Progress.Two; }
-            else { next.progress = PlayerMultiplier.Progress.All; }
+            ++next.levels[which];
             mainMultiplier = next;
             return true;
         }
 
-        public BigInteger SecondsUntilStatsUp(out TransformationLabel bestTransf)
+        public BigInteger SecondsUntilStatsUp(StatLabel which, out TransformationLabel bestTransf)
         {
             bestTransf = TransformationLabel.None;
-            int l2 = mainMultiplier.log2Multiplier;
+            int l2 = mainMultiplier.levels[which];
             if (l2 >= GameInfo.plrMulCosts.Length) { return BigInteger.Pow(10, 100); }
-            double neededCoins = 0;
-            if (mainMultiplier.progress == PlayerMultiplier.Progress.All) { neededCoins = GameInfo.plrMulCosts[l2]; }
-            else { neededCoins = GameInfo.plrMulCosts[l2 - 1]; }
+            if (!mainMultiplier.WouldItRemainBalanced(which)) { return BigInteger.Pow(10, 100); }
+            double neededCoins = GameInfo.plrMulCosts[l2];
             return SecondsUntilCoins(neededCoins, out bestTransf);
         }
 
         public string StatsInfo()
         {
-            return "Player multiplier is " + mainMultiplier.Multiplier().ToString() + " for " + mainMultiplier.progress.ToString().ToLower() + " of the stats";
+            return "(End " + mainMultiplier.Multiplier(StatLabel.Endurance)
+                + ") (Str " + mainMultiplier.Multiplier(StatLabel.Strength)
+                + ") (Psy " + mainMultiplier.Multiplier(StatLabel.Psychic) + ")";
         }
         
         // return true = success
@@ -401,7 +607,6 @@ namespace SuperPowerSolver
             TransformationLabel bestTransf;
             Play(SecondsUntilRankUp(out bestTransf), bestTransf);
             power = 0;
-            mainMultiplier = new PlayerMultiplier();
             rank = rank + 1;
             return true;
         }
@@ -448,7 +653,6 @@ namespace SuperPowerSolver
             if (!RankSufficientForNextFusion()) { return false; }
             TransformationLabel bestTransf;
             Play(SecondsUntilNextFusion(out bestTransf), bestTransf);
-            power = 0;
             rank = RankLabel.F;
             fusion = fusion + 1;
             transformations.Add(GameInfo.transfFromFusion[fusion]);
@@ -473,6 +677,82 @@ namespace SuperPowerSolver
             return "Player fusion is " + fusion.ToString();
         }
 
+        public bool BuyPack(ItemPack pack)
+        {
+            TransformationLabel bestTransf;
+            Play(SecondsUntilBuyPack(pack, 1, out bestTransf), bestTransf);
+            gems -= pack.cost;
+            AncientItem item = pack.PickItem();
+            mostRecentItem = item;
+            Dictionary<StatLabel, double> newMFI = new Dictionary<StatLabel, double>(multipliersFromItems);
+            if (!items.ContainsKey(item)) { items.Add(item, 0); }
+            if (items.ContainsKey(item))
+            foreach (var kv in multipliersFromItems)
+            {
+                double lastMul = item.GetMultiplier(kv.Key, items[item]);
+                double newMul = item.GetMultiplier(kv.Key, items[item] + 1);
+                newMFI[kv.Key] += (newMul - lastMul);
+            }
+            ++items[item];
+            multipliersFromItems = newMFI;
+            ++totalItems;
+            return true;
+        }
+
+        // Average buy until obtain the item
+        public bool BuyPackForItem(AncientItem target)
+        {
+            if (items.ContainsKey(target) && items[target] > 0.99) { return false; }
+            TransformationLabel bestTransf;
+            double amount = target.ExpectedTries();
+            Play(SecondsUntilBuyPack(target.pack, amount, out bestTransf), bestTransf);
+            gems -= target.pack.cost * amount;
+            Dictionary<StatLabel, double> newMFI = new Dictionary<StatLabel, double>(multipliersFromItems);
+            mostRecentItem = target;
+            foreach (AncientItem item in target.pack.items)
+            {
+                if (!items.ContainsKey(item)) { items.Add(item, 0); }
+                double copiesGotten = amount * item.NormalizedChance();
+                foreach (var kv in multipliersFromItems)
+                {
+                    double lastMul = item.GetMultiplier(kv.Key, items[item]);
+                    double newMul = item.GetMultiplier(kv.Key, items[item] + copiesGotten);
+                    newMFI[kv.Key] += (newMul - lastMul);
+                }
+                items[item] += copiesGotten;
+                totalItems += copiesGotten;
+            }
+            multipliersFromItems = newMFI;
+            return true;
+        }
+
+        public BigInteger SecondsUntilMeanItem(AncientItem item, out TransformationLabel bestTransf)
+        {
+            bestTransf = TransformationLabel.None;
+            if (items.ContainsKey(item) && items[item] > 0.99) { return BigInteger.Pow(10, 100); }
+            double tries = item.ExpectedTries();
+            return SecondsUntilBuyPack(item.pack, tries, out bestTransf);
+        }
+
+        // It takes 5 seconds to open a pack
+        public BigInteger SecondsUntilBuyPack(ItemPack pack, double amount, out TransformationLabel bestTransf)
+        {
+            bestTransf = TransformationLabel.None;
+            if (gems >= pack.cost * amount) { return (BigInteger)Math.Ceiling(5 * amount); }
+            return SecondsUntilGems(pack.cost * amount, out bestTransf) + (BigInteger)Math.Ceiling(5 * amount);
+        }
+
+        public string ItemInfo()
+        {
+            if (items.Count == 0) { return "No items"; }
+            // Unique items is not total items!
+            string test = mostRecentItem.stat.ToString();
+            return Math.Round(totalItems) + " items, Last one was " + mostRecentItem.name + " #" + items[mostRecentItem].ToString("G7")
+                + "\n\t" + "Total item multipliers: (S " + multipliersFromItems[StatLabel.Strength].ToString("G7") 
+                + ")(E " + multipliersFromItems[StatLabel.Endurance].ToString("G7")
+                + ")(P " + multipliersFromItems[StatLabel.Psychic].ToString("G7") + ")";
+        }
+
         public List<PlayerGoal> AvailableGoals()
         {
             List<PlayerGoal> ret = new List<PlayerGoal>();
@@ -489,6 +769,9 @@ namespace SuperPowerSolver
         public static Random rand = new Random();
 
         public static double baseCoinsPerSecond = 25.0 / 60.0;
+        public static double baseGemsPerSecond = 500.0 / 60;
+        // Oops! The offer changes every day!
+        //public static double dailyOfferGemsPerSecond = 100000.0 / (60 * 60 * 24);
 
         public static double[] plrMulCosts = new double[] {100, 200, 500, 750,
         1000, 2000, 3000, 5000, 7500,
@@ -535,18 +818,23 @@ namespace SuperPowerSolver
 
         public static Dictionary<TransformationLabel, Transformation> transfInfo = new Dictionary<TransformationLabel, Transformation>()
         {
-            { TransformationLabel.None, new Transformation(0, 1, 1) },
-            { TransformationLabel.BuffNoob, new Transformation(25000, 1.2, 1) },
-            { TransformationLabel.Guardian, new Transformation(250000, 1, 1.1) },
-            { TransformationLabel.Shadow, new Transformation(1e6, 3, 1) },
-            { TransformationLabel.Void, new Transformation(1.5e6, 5, 1) },
-            { TransformationLabel.FDragon, new Transformation(2e6, 4, 1.15) },
-            { TransformationLabel.SciBorg, new Transformation(2e6, 5.5, 1) },
-            { TransformationLabel.Ocean, new Transformation(2.5e6, 7, 1) },
-            { TransformationLabel.Warrior, new Transformation(2.5e6, 7, 1.1) },
-            { TransformationLabel.ELord, new Transformation(3e6, 10, 1.125) },
-            { TransformationLabel.Thunder, new Transformation(4e6, 12, 1.075) },
-            { TransformationLabel.MDragon, new Transformation(5e6, 13.5, 1.135) },
+            { TransformationLabel.None, new Transformation(0, 1, 1, 1) },
+            { TransformationLabel.BuffNoob, new Transformation(25000, 1.2, 1, 1.75) },
+            { TransformationLabel.GoldGrd, new Transformation(250000, 1, 1.1, 1) },
+            { TransformationLabel.Shadow, new Transformation(1e6, 3, 1, 4) },
+            { TransformationLabel.Void, new Transformation(1.5e6, 5, 1, 7) },
+            { TransformationLabel.FDragon, new Transformation(2e6, 4, 1.15, 6) },
+            { TransformationLabel.SciBorg, new Transformation(2e6, 5.5, 1, 6) },
+            { TransformationLabel.Ocean, new Transformation(2.5e6, 7, 1, 15) },
+            { TransformationLabel.GWarrior, new Transformation(2.5e6, 7, 1.1, 7) },
+            { TransformationLabel.ELord, new Transformation(3e6, 10, 1.125, 10) },
+            { TransformationLabel.Thunder, new Transformation(4e6, 12, 1.075, 12) },
+            { TransformationLabel.MDragon, new Transformation(5e6, 13.5, 1.135, 13.5) },
+
+            { TransformationLabel.Ninja, new Transformation(5000, 1, 1, 1.25) },
+            { TransformationLabel.GemGrd, new Transformation(250000, 1, 1, 3) },
+            { TransformationLabel.FKnight, new Transformation(400000, 1, 1, 2.5) },
+            { TransformationLabel.AWarrior, new Transformation(750000, 1, 1, 3.5) },
 
             { TransformationLabel.Werewolf, new Transformation(1.5) },
             { TransformationLabel.Minotaur, new Transformation(2) },
@@ -602,16 +890,103 @@ namespace SuperPowerSolver
 
         public static List<PlayerGoal> plrGoals = null; // initialized in static constructor
 
+        public static Dictionary<Rarity, int[]> itemGradeRequirements = new Dictionary<Rarity, int[]>()
+        {
+            { Rarity.Common, new int[5] { 1, 10, 20, 50, 100 } },
+            { Rarity.Rare, new int[5] { 1, 10, 20, 40, 70 } },
+            { Rarity.Epic, new int[5] { 1, 3, 10, 20, 40 } },
+            { Rarity.Legendary, new int[5] { 1, 2, 5, 10, 20 } },
+            { Rarity.Celestial, new int[5] { 1, 2, 4, 7, 10 } },
+            { Rarity.God, new int[5] { 1, 2, 3, 4, 5 } },
+        };
+
+        public static List<ItemPack> itemPacks = null;
+
         static GameInfo()
         {
+            // load items table
+            itemPacks = new List<ItemPack>();
+            Console.WriteLine("Loading item table...");
+            // This file name assumes we run debug mode within Visual Studio. Fix later
+            using (var rh = new StreamReader("..\\..\\AncientItems.csv"))
+            {
+                rh.ReadLine();
+                rh.ReadLine();
+                ItemPack currPack = null;
+                StatLabel storedStat = StatLabel.All;
+                double storedChance = -1;
+                Rarity storedRarity = Rarity.Common;
+                double storedSellWorth = 0;
+                double[] storedMultipliers = new double[5] { 0, 0, 0, 0, 0 };
+                while (!rh.EndOfStream)
+                {
+                    string[] cells = rh.ReadLine().Split(',');
+                    if (cells[0] != "")
+                    {
+                        if (currPack != null) { itemPacks.Add(currPack); }
+                        currPack = new ItemPack();
+                        currPack.name = cells[0];
+                        currPack.cost = double.Parse(cells[1]);
+                        currPack.items = new HashSet<AncientItem>();
+                    }
+                    else
+                    {
+                        AncientItem newItem = new AncientItem();
+                        newItem.name = cells[1];
+                        switch (cells[2])
+                        {
+                            case "S": storedStat = StatLabel.Strength; break;
+                            case "E": storedStat = StatLabel.Endurance; break;
+                            case "P": storedStat = StatLabel.Psychic; break;
+                            case "A": storedStat = StatLabel.All; break;
+                            default: break;
+                        }
+                        newItem.stat = storedStat;
+                        if (cells[3] != "") { storedChance = double.Parse(cells[3]); }
+                        newItem.chance = storedChance;
+                        switch (cells[4])
+                        {
+                            case "C": storedRarity = Rarity.Common; break;
+                            case "R": storedRarity = Rarity.Rare; break;
+                            case "E": storedRarity = Rarity.Epic; break;
+                            case "L": storedRarity = Rarity.Legendary; break;
+                            case "S": storedRarity = Rarity.Celestial; break;
+                            case "G": storedRarity = Rarity.God; break;
+                            default: break;
+                        }
+                        newItem.rarity = storedRarity;
+                        if (cells[5] != "") { storedSellWorth = double.Parse(cells[5]); }
+                        newItem.sellWorth = storedSellWorth;
+                        for (int i = 0; i < 5; ++i)
+                        {
+                            if (cells[6 + i] != "") { storedMultipliers[i] = double.Parse(cells[6 + i]); }
+                        }
+                        newItem.multipliers = new double[5];
+                        for (int i = 0; i < 5; ++i) { newItem.multipliers[i] = storedMultipliers[i]; }
+                        newItem.pack = currPack;
+                        currPack.items.Add(newItem);
+                    }
+                }
+                if (currPack != null) { itemPacks.Add(currPack); }
+            }
+            Console.WriteLine("Item table loading is over.");
+
+            // add goals
             plrGoals = new List<PlayerGoal>();
-            plrGoals.Add(new StatsUpGoal());
+            plrGoals.Add(new StatsUpGoal(StatLabel.Endurance));
+            plrGoals.Add(new StatsUpGoal(StatLabel.Psychic));
+            plrGoals.Add(new StatsUpGoal(StatLabel.Strength));
             plrGoals.Add(new RankUpGoal());
             plrGoals.Add(new FusionGoal());
             foreach (var kv in transfInfo)
             {
                 if (kv.Key == TransformationLabel.None || kv.Value.obtainedByFusion) { continue; }
                 plrGoals.Add(new TransformationGoal(kv.Key));
+            }
+            // foreach (ItemPack pack in itemPacks) { plrGoals.Add(new OneItemPackGoal(pack)); }
+            foreach (ItemPack pack in itemPacks)
+            {
+                foreach (AncientItem item in pack.items) { plrGoals.Add(new AncientItemGoal(item)); }
             }
         }
     }
@@ -631,10 +1006,13 @@ namespace SuperPowerSolver
     // instructions to progress through the game
     class PlayerPath
     {
-        Player initPlr;
-        PathEndCondition end;
-        List<PlayerGoal> path;
+        public Player initPlr;
+        public PathEndCondition end;
+        public List<PlayerGoal> path;
         public BigInteger completionTime;
+
+        // Damper so we don't buy individual packs forever, since it's so fast
+        public const int PACK_RESISTANCE = 5;
 
         public PlayerPath(Player ip, PathEndCondition e, List<PlayerGoal> p)
         {
@@ -648,9 +1026,18 @@ namespace SuperPowerSolver
                 if (p[i] is StatsUpGoal)
                 {
                     int multiple = 1;
-                    while (i + multiple < p.Count && p[i + multiple] is StatsUpGoal) { ++multiple; }
+                    while (i + multiple < p.Count && p[i + multiple] is StatsUpGoal
+                        && (p[i] as StatsUpGoal).which == (p[i + multiple] as StatsUpGoal).which) { ++multiple; }
                     if (multiple == 1) { path.Add(p[i]); }
-                    else { path.Add(new MultiStatsUpGoal(multiple)); }
+                    else { path.Add(new MultiStatsUpGoal((p[i] as StatsUpGoal).which, multiple)); }
+                    i += multiple - 1;
+                }
+                else if (p[i] is RankUpGoal)
+                {
+                    int multiple = 1;
+                    while (i + multiple < p.Count && p[i + multiple] is RankUpGoal) { ++multiple; }
+                    if (multiple == 1) { path.Add(p[i]); }
+                    else { path.Add(new MultiRankUpGoal(multiple)); }
                     i += multiple - 1;
                 }
                 else { path.Add(p[i]); }
@@ -681,7 +1068,7 @@ namespace SuperPowerSolver
                 Console.WriteLine("--------");
                 ++i;
             }
-            Console.WriteLine("Total time (s): " + plr.seconds);
+            Console.WriteLine("Total time: " + plr.seconds);
             Console.WriteLine("--------");
         }
 
@@ -698,7 +1085,9 @@ namespace SuperPowerSolver
                 BigInteger t = goals[i].TimeUntilExecute(plr);
                 // We always choose a 0 second goal if one is available
                 if (t == 0) { return goals[i]; }
-                chances[i] = Math.Sqrt(1.0 / (double)goals[i].TimeUntilExecute(plr));
+                
+                if (goals[i] is OneItemPackGoal) { t *= PACK_RESISTANCE * ((BigInteger)plr.totalItems) + 1; }
+                chances[i] = Math.Sqrt(1.0 / (double)t);
                 sum += chances[i];
             }
             for (int i = 0; i < goals.Count; ++i) { chances[i] /= sum; }
@@ -730,7 +1119,7 @@ namespace SuperPowerSolver
         }
 
         // The greedy algorithm always executes the goal that takes the least time.
-        // This is a fine initial path, and should be in the starting pool.
+        // Obsolete: it will keep buy the Basic pack forever!
         public static PlayerPath GreedyPath(Player init, PathEndCondition end)
         {
             Player plr = new Player(init);
@@ -767,7 +1156,7 @@ namespace SuperPowerSolver
             {
                 for (int bi = 1; bi < b.path.Count - 1; ++bi)
                 {
-                    if (aStates[ai].IsSimilar(bStates[bi])) { points.Add(ai, bi); }
+                    if (!points.ContainsKey(ai) && aStates[ai].IsSimilar(bStates[bi])) { points[ai] = bi; }
                 }
             }
             return points;
@@ -777,11 +1166,14 @@ namespace SuperPowerSolver
         public static Tuple<PlayerPath, PlayerPath> Splice(PlayerPath a, PlayerPath b)
         {
             if (a.path.Count < 3 || b.path.Count < 3) { return new Tuple<PlayerPath, PlayerPath>(a, b); }
-            Dictionary<int, int> splicePoints = SplicePoints(a, b);
+            Dictionary<int, int> splicePoints;
+            try { splicePoints = SplicePoints(a, b); }
+            catch (Exception e) { Console.WriteLine(e.Message); return new Tuple<PlayerPath, PlayerPath>(a, b); }
             if (splicePoints.Count == 0) { return new Tuple<PlayerPath, PlayerPath>(a, b); }
             // Find the most central splice point to both
             int lowestSpliceScore = int.MaxValue;
             int spliceAPoint = -1;
+
             foreach (var kv in splicePoints)
             {
                 int spliceScore = Math.Abs(kv.Key - a.path.Count / 2) + Math.Abs(kv.Value - b.path.Count / 2);
@@ -818,23 +1210,31 @@ namespace SuperPowerSolver
         public int poolSize = 150;
         public int keepRandom = 30;
         public int generations = 500;
+        public double mutationRate = 0.1; // percent of paths where one node may be changed
+        public double introduceOldRecordsRate = 0.3; // percent of random paths that are turned onto old records
         public PlayerPath Simulate(Player plr, PathEndCondition end)
         {
+
             PlayerPath[] pool = new PlayerPath[poolSize];
-            pool[0] = PlayerPath.GreedyPath(plr, end);
-            for (int i = 1; i < poolSize; ++i) { pool[i] = PlayerPath.RandomPath(plr, end); }
+            for (int i = 0; i < poolSize; ++i) { pool[i] = PlayerPath.RandomPath(plr, end); }
+            PlayerPath bestPath = pool[0];
+            BigInteger bestPathTime = pool[0].completionTime;
+            List<PlayerPath> oldBestPaths = new List<PlayerPath>();
             for (int i = 0; i < generations; ++i)
             {
-                if (i % 10 == 0) { Console.WriteLine("Generation " + i.ToString() + "/" + generations.ToString()); }
+                {
+                    Console.WriteLine("Generation " + i.ToString() + "/" + generations.ToString());
+                    Console.WriteLine("Current best time is " + bestPathTime);
+                }
                 PlayerPath[] newPool = new PlayerPath[poolSize];
 
-                for (int l = 0; l < poolSize; l += 2)
+                for (int l = 0; l < poolSize - keepRandom; l += 2)
                 {
                     double[] chances = new double[poolSize];
                     double sum = 0;
                     for (int k = 0; k < poolSize; ++k)
                     {
-                        chances[k] = Math.Sqrt(1.0 / (double)pool[k].completionTime);
+                        chances[k] = Math.Pow(1.0 / (double)pool[k].completionTime, 0.5 + 0.5 * (i / (double)generations));
                         sum += chances[k];
                     }
                     for (int k = 0; k < poolSize; ++k) { chances[k] /= sum; }
@@ -872,10 +1272,73 @@ namespace SuperPowerSolver
                     newPool[l] = children.Item1;
                     newPool[l + 1] = children.Item2;
                 }
-                for (int k = poolSize - 1; k >= poolSize - keepRandom; --k) { pool[k] = PlayerPath.RandomPath(plr, end); }
+                for (int k = poolSize - 1; k >= poolSize - keepRandom; --k)
+                {
+                    // Start introducing old good solutions
+                    if (GameInfo.rand.NextDouble() < introduceOldRecordsRate && oldBestPaths.Count > 10)
+                    {
+                        newPool[k] = oldBestPaths[GameInfo.rand.Next(oldBestPaths.Count - 5)];
+                    }
+                    else { newPool[k] = PlayerPath.RandomPath(plr, end); }
+                }
+
+                // Random mutations: insertion and deletion
+                for (int k = 0; k < poolSize; ++k)
+                {
+                    if (GameInfo.rand.NextDouble() < mutationRate) { continue; }
+                    if (newPool[k] == null) { throw new Exception("How?"); }
+                    for (int l = 0; l < newPool[k].path.Count / 50; ++l)
+                    {
+                        int mutidx = GameInfo.rand.Next(newPool[k].path.Count);
+                        List<PlayerGoal> mutp = new List<PlayerGoal>(newPool[k].path);
+                        PlayerGoal mut = mutp[mutidx];
+                        if (GameInfo.rand.Next(2) == 1) // deletion
+                        {
+                            if (mut is MultiStatsUpGoal && (mut as MultiStatsUpGoal).multiple > 1)
+                            {
+                                mutp[mutidx] = new MultiStatsUpGoal((mut as MultiStatsUpGoal).which, (mut as MultiStatsUpGoal).multiple - 1);
+                            }
+                            else if (!(mut is RankUpGoal) && !(mut is MultiRankUpGoal) && !(mut is FusionGoal))
+                            {
+                                mutp.RemoveAt(mutidx);
+                            }
+                        }
+                        else // Insertion
+                        {
+                            if (mut is MultiStatsUpGoal)
+                            {
+                                mutp[mutidx] = new MultiStatsUpGoal((mut as MultiStatsUpGoal).which, (mut as MultiStatsUpGoal).multiple + 1);
+                            }
+                            else if (mut is StatsUpGoal) { mut = new MultiStatsUpGoal((mut as StatsUpGoal).which, 2); }
+                            else
+                            {
+                                PlayerGoal insertGoal = GameInfo.plrGoals[GameInfo.rand.Next(GameInfo.plrGoals.Count)];
+                                if (!(insertGoal is RankUpGoal) && !(mut is MultiRankUpGoal) && !(insertGoal is FusionGoal))
+                                {
+                                    mutp.Insert(mutidx, insertGoal);
+                                }
+                            }
+                        }
+
+                        try { newPool[k] = new PlayerPath(newPool[k].initPlr, newPool[k].end, mutp); }
+                        catch { }
+                    }
+                }
+
                 pool = newPool;
+
+                for (int k = 0; k < poolSize; ++k)
+                {
+                    if (pool[k].completionTime < bestPathTime)
+                    {
+                        bestPathTime = pool[k].completionTime;
+                        bestPath = pool[k];
+                    }
+                }
+                oldBestPaths.Add(bestPath);
             }
-            return pool[0];
+            
+            return bestPath;
         }
     }
 
@@ -884,19 +1347,11 @@ namespace SuperPowerSolver
         static void Main(string[] args)
         {
             Player plr = new Player();
-            plr.mainMultiplier = new PlayerMultiplier();
-            plr.mainMultiplier.log2Multiplier = 22;
-            plr.mainMultiplier.progress = PlayerMultiplier.Progress.All;
-            plr.rank = RankLabel.Y;
-            plr.fusion = FusionLabel.Phoenix;
-            plr.transformations = new HashSet<TransformationLabel>()
-            {
-                TransformationLabel.BuffNoob, TransformationLabel.ELord
-            };
             PlayerPath greedy = PlayerPath.GreedyPath(plr, new EndPathByRank(RankLabel.Omni));
             PlayerPath winner = (new GeneticSimulator()).Simulate(plr, new EndPathByRank(RankLabel.Omni));
             Console.WriteLine("Greedy solution");
             greedy.Print();
+            Console.WriteLine();
             Console.WriteLine("Genetic solution");
             winner.Print();
 
